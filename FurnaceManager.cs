@@ -13,7 +13,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("FurnaceManager", "Milestorme", "0.1.0")]
+    [Info("Furnace Manager", "Milestorme", "0.1.1")]
     [Description("Unified furnace management with splitter, quick smelt, fuel automation, and accurate UI")]
     public class FurnaceManager : RustPlugin
     {
@@ -145,6 +145,8 @@ namespace Oxide.Plugins
 
                 UnityEngine.Object.Destroy(component);
             }
+
+            Instance = null;
         }
 
         private void OnEntitySpawned(BaseNetworkable entity)
@@ -746,10 +748,11 @@ namespace Oxide.Plugins
             if (args.Length == 0)
             {
                 var helpmsg = new StringBuilder();
-                helpmsg.Append("<size=22><color=green>FurnaceManager</color></size> by: Milestorme\n");
-                helpmsg.Append(lang.GetMessage("StatusMessage", this, player.UserIDString) + status + "\n");
-                helpmsg.Append("<color=orange>/fm on</color> - Toggle on\n");
-                helpmsg.Append("<color=orange>/fm off</color> - Toggle off\n");
+                helpmsg.Append(Lang("HelpHeader", player.UserIDString)).Append("\n");
+                helpmsg.Append(string.Format(Lang("StatusMessage", player.UserIDString), status)).Append("\n");
+                helpmsg.Append(Lang("HelpToggleOn", player.UserIDString)).Append("\n");
+                helpmsg.Append(Lang("HelpToggleOff", player.UserIDString)).Append("\n");
+                helpmsg.Append(Lang("HelpTrim", player.UserIDString));
                 player.ChatMessage(helpmsg.ToString().TrimEnd());
                 return;
             }
@@ -759,15 +762,15 @@ namespace Oxide.Plugins
                 case "on":
                     SetEnabled(player, true);
                     CreateUiIfFurnaceOpen(player);
-                    player.ChatMessage(lang.GetMessage("StatusMessage", this, player.UserIDString) + lang.GetMessage("StatusONColor", this, player.UserIDString));
+                    player.ChatMessage(string.Format(Lang("StatusMessage", player.UserIDString), Lang("StatusONColor", player.UserIDString)));
                     break;
                 case "off":
                     SetEnabled(player, false);
                     DestroyUI(player);
-                    player.ChatMessage(lang.GetMessage("StatusMessage", this, player.UserIDString) + lang.GetMessage("StatusOFFColor", this, player.UserIDString));
+                    player.ChatMessage(string.Format(Lang("StatusMessage", player.UserIDString), Lang("StatusOFFColor", player.UserIDString)));
                     break;
                 default:
-                    player.ChatMessage("Invalid syntax!");
+                    player.ChatMessage(Lang("InvalidSyntax", player.UserIDString));
                     break;
             }
         }
@@ -958,6 +961,12 @@ namespace Oxide.Plugins
 
         private bool CanUse(ulong id) => !config.UsePermission || permission.UserHasPermission(id.ToString(), permUse);
         private bool HasPermission(BasePlayer player) => player != null && (!config.UsePermission || permission.UserHasPermission(player.UserIDString, permUse));
+
+        private string Lang(string key, string userId = null, params object[] args)
+        {
+            var message = lang.GetMessage(key, this, userId);
+            return args == null || args.Length == 0 ? message : string.Format(message, args);
+        }
 
         private PluginConfig.OvenConfig GetSettings(string shortname)
         {
@@ -1211,19 +1220,25 @@ namespace Oxide.Plugins
 
         protected override void LoadDefaultMessages()
         {
-            lang.RegisterMessages(new Dictionary<string, string> {
+            lang.RegisterMessages(new Dictionary<string, string>
+            {
                 { "turnon", "Turn On" },
                 { "turnoff", "Turn Off" },
                 { "title", "Furnace Manager" },
                 { "eta", "ETA" },
                 { "totalstacks", "Total stacks" },
                 { "trim", "Trim fuel" },
-                { "lootsource_invalid", "Current loot source invalid" },
+                { "lootsource_invalid", "Current loot source invalid." },
                 { "unsupported_furnace", "Unsupported furnace." },
                 { "nopermission", "You don't have permission to use this." },
-                { "StatusONColor", "<color=green>ON</color>"},
-                { "StatusOFFColor", "<color=red>OFF</color>"},
-                { "StatusMessage", "FurnaceManager status set to: "}
+                { "StatusONColor", "<color=green>ON</color>" },
+                { "StatusOFFColor", "<color=red>OFF</color>" },
+                { "StatusMessage", "Furnace Manager status set to: {0}" },
+                { "HelpHeader", "<size=22><color=green>Furnace Manager</color></size> by: Milestorme" },
+                { "HelpToggleOn", "<color=orange>/fm on</color> - Enable Furnace Manager" },
+                { "HelpToggleOff", "<color=orange>/fm off</color> - Disable Furnace Manager" },
+                { "HelpTrim", "<color=orange>/fm trim</color> - Trim excess fuel from the current oven" },
+                { "InvalidSyntax", "Invalid syntax. Use <color=orange>/fm</color>, <color=orange>/fm on</color>, <color=orange>/fm off</color>, or <color=orange>/fm trim</color>." }
             }, this);
         }
 
