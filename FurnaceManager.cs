@@ -13,7 +13,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Furnace Manager", "Milestorme", "0.1.2")]
+    [Info("Furnace Manager", "Milestorme", "0.1.3")]
     [Description("Unified furnace management with splitter, quick smelt, fuel automation, and accurate UI")]
     public class FurnaceManager : RustPlugin
     {
@@ -62,7 +62,7 @@ namespace Oxide.Plugins
 
         private readonly Dictionary<ulong, string> openUis = new Dictionary<ulong, string>();
         private readonly Dictionary<BaseOven, List<BasePlayer>> looters = new Dictionary<BaseOven, List<BasePlayer>>();
-        private readonly Stack<BaseOven> queuedUiUpdates = new Stack<BaseOven>();
+        private readonly HashSet<BaseOven> queuedUiUpdates = new HashSet<BaseOven>();
         private Timer uiRefreshTimer;
 
         #region Hooks
@@ -190,7 +190,7 @@ namespace Oxide.Plugins
         private void OnFuelConsume(BaseOven oven, Item fuel, ItemModBurnable burnable)
         {
             if (IsOvenCompatible(oven))
-                queuedUiUpdates.Push(oven);
+                QueueUiUpdate(oven);
         }
 
         private object OnOvenToggle(BaseOven oven, BasePlayer player)
@@ -215,7 +215,7 @@ namespace Oxide.Plugins
                     controller.StartCooking();
             }
 
-            queuedUiUpdates.Push(oven);
+            QueueUiUpdate(oven);
             return false;
         }
 
@@ -227,7 +227,7 @@ namespace Oxide.Plugins
 
             AddLooter(oven, player);
             if (GetEnabled(player))
-                queuedUiUpdates.Push(oven);
+                QueueUiUpdate(oven);
             else
                 CreateUi(player, oven, new OvenInfo());
         }
@@ -242,21 +242,41 @@ namespace Oxide.Plugins
             RemoveLooter(oven, player);
         }
 
+        private void QueueUiUpdate(BaseOven oven)
+        {
+            if (oven != null && !oven.IsDestroyed)
+                queuedUiUpdates.Add(oven);
+        }
+
         private void ProcessQueuedUiUpdates()
         {
             const int maxUpdatesPerRun = 25;
-            var processed = 0;
+            if (queuedUiUpdates.Count == 0)
+                return;
 
-            while (queuedUiUpdates.Count > 0 && processed < maxUpdatesPerRun)
+            var processed = 0;
+            var ovensToRemove = new List<BaseOven>();
+
+            foreach (var oven in queuedUiUpdates)
             {
-                var oven = queuedUiUpdates.Pop();
+                if (processed >= maxUpdatesPerRun)
+                    break;
+
+                ovensToRemove.Add(oven);
+
                 if (!oven || oven.IsDestroyed)
+                {
+                    processed++;
                     continue;
+                }
 
                 var ovenInfo = GetOvenInfo(oven);
                 var ovenLooters = GetLooters(oven);
                 if (ovenLooters == null)
+                {
+                    processed++;
                     continue;
+                }
 
                 for (var i = 0; i < ovenLooters.Count; i++)
                 {
@@ -267,6 +287,9 @@ namespace Oxide.Plugins
 
                 processed++;
             }
+
+            for (var i = 0; i < ovensToRemove.Count; i++)
+                queuedUiUpdates.Remove(ovensToRemove[i]);
         }
 
         #endregion
@@ -360,7 +383,7 @@ namespace Oxide.Plugins
                 if (GetSettings(oven.ShortPrefabName).allowAutoFuel)
                     AutoAddFuel(inventory, oven);
 
-                queuedUiUpdates.Push(oven);
+                QueueUiUpdate(oven);
                 return true;
             }
 
@@ -576,7 +599,7 @@ namespace Oxide.Plugins
         {
             BaseOven oven = player.inventory.loot?.entitySource as BaseOven;
             if (oven != null && IsOvenCompatible(oven))
-                queuedUiUpdates.Push(oven);
+                QueueUiUpdate(oven);
         }
 
         private CuiElementContainer CreateUi(BasePlayer player, BaseOven oven, OvenInfo ovenInfo)
@@ -899,7 +922,7 @@ namespace Oxide.Plugins
                     break;
             }
 
-            queuedUiUpdates.Push(lootSource);
+            QueueUiUpdate(lootSource);
         }
 
         #endregion
@@ -1130,7 +1153,7 @@ namespace Oxide.Plugins
                     ConsumeFuel(burnableItem, burnable);
 
                 ticks++;
-                plugin.queuedUiUpdates.Push(oven);
+                plugin.QueueUiUpdate(oven);
                 Interface.CallHook("OnOvenCooked", this, burnableItem, slot);
             }
 
