@@ -13,7 +13,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Furnace Manager", "Milestorme", "0.1.1")]
+    [Info("Furnace Manager", "Milestorme", "0.1.2")]
     [Description("Unified furnace management with splitter, quick smelt, fuel automation, and accurate UI")]
     public class FurnaceManager : RustPlugin
     {
