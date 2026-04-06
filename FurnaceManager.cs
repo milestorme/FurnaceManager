@@ -63,6 +63,7 @@ namespace Oxide.Plugins
         private readonly Dictionary<ulong, string> openUis = new Dictionary<ulong, string>();
         private readonly Dictionary<BaseOven, List<BasePlayer>> looters = new Dictionary<BaseOven, List<BasePlayer>>();
         private readonly Stack<BaseOven> queuedUiUpdates = new Stack<BaseOven>();
+        private Timer uiRefreshTimer;
 
         #region Hooks
 
@@ -119,10 +120,15 @@ namespace Oxide.Plugins
                         controller.StartCooking();
                 }
             });
+
+            uiRefreshTimer = timer.Every(0.25f, ProcessQueuedUiUpdates);
         }
 
         private void Unload()
         {
+            uiRefreshTimer?.Destroy();
+            uiRefreshTimer = null;
+
             SaveData();
 
             foreach (var kv in openUis.ToDictionary(kv => kv.Key, kv => kv.Value))
@@ -236,20 +242,30 @@ namespace Oxide.Plugins
             RemoveLooter(oven, player);
         }
 
-        private void OnTick()
+        private void ProcessQueuedUiUpdates()
         {
-            while (queuedUiUpdates.Count > 0)
+            const int maxUpdatesPerRun = 25;
+            var processed = 0;
+
+            while (queuedUiUpdates.Count > 0 && processed < maxUpdatesPerRun)
             {
                 var oven = queuedUiUpdates.Pop();
                 if (!oven || oven.IsDestroyed)
                     continue;
 
                 var ovenInfo = GetOvenInfo(oven);
-                GetLooters(oven)?.ForEach(player =>
+                var ovenLooters = GetLooters(oven);
+                if (ovenLooters == null)
+                    continue;
+
+                for (var i = 0; i < ovenLooters.Count; i++)
                 {
+                    var player = ovenLooters[i];
                     if (player != null && !player.IsDestroyed && HasPermission(player) && GetEnabled(player))
                         CreateUi(player, oven, ovenInfo);
-                });
+                }
+
+                processed++;
             }
         }
 
