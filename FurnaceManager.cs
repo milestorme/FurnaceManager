@@ -13,7 +13,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Furnace Manager", "Milestorme", "0.1.3")]
+    [Info("Furnace Manager", "Milestorme", "0.1.5")]
     [Description("Unified furnace management with splitter, quick smelt, fuel automation, and accurate UI")]
     public class FurnaceManager : RustPlugin
     {
@@ -83,7 +83,7 @@ namespace Oxide.Plugins
                 if (gameObj == null) continue;
 
                 var oven = gameObj.GetComponent<BaseOven>();
-                if (oven != null && oven.allowByproductCreation)
+                if (oven != null && (oven.allowByproductCreation || IsFuelOptionalOven(oven)))
                 {
                     if (!initialStackOptions.ContainsKey(oven.ShortPrefabName))
                         initialStackOptions[oven.ShortPrefabName] = oven.inputSlots;
@@ -121,7 +121,7 @@ namespace Oxide.Plugins
                 }
             });
 
-            uiRefreshTimer = timer.Every(0.25f, ProcessQueuedUiUpdates);
+            uiRefreshTimer = timer.Every(0.5f, ProcessQueuedUiUpdates);
         }
 
         private void Unload()
@@ -250,46 +250,59 @@ namespace Oxide.Plugins
 
         private void ProcessQueuedUiUpdates()
         {
-            const int maxUpdatesPerRun = 25;
+            const int maxUpdatesPerRun = 15;
             if (queuedUiUpdates.Count == 0)
                 return;
 
             var processed = 0;
-            var ovensToRemove = new List<BaseOven>();
+            List<BaseOven> ovensToRemove = Facepunch.Pool.Get<List<BaseOven>>();
 
-            foreach (var oven in queuedUiUpdates)
+            try
             {
-                if (processed >= maxUpdatesPerRun)
-                    break;
-
-                ovensToRemove.Add(oven);
-
-                if (!oven || oven.IsDestroyed)
+                foreach (var oven in queuedUiUpdates)
                 {
+                    if (processed >= maxUpdatesPerRun)
+                        break;
+
+                    ovensToRemove.Add(oven);
+
+                    if (oven == null || oven.IsDestroyed)
+                    {
+                        processed++;
+                        continue;
+                    }
+
+                    var ovenInfo = GetOvenInfo(oven);
+                    var ovenLooters = GetLooters(oven);
+                    if (ovenLooters == null)
+                    {
+                        processed++;
+                        continue;
+                    }
+
+                    for (var i = ovenLooters.Count - 1; i >= 0; i--)
+                    {
+                        var player = ovenLooters[i];
+                        if (player == null || player.IsDestroyed || !player.IsConnected)
+                        {
+                            ovenLooters.RemoveAt(i);
+                            continue;
+                        }
+
+                        if (HasPermission(player) && GetEnabled(player))
+                            CreateUi(player, oven, ovenInfo);
+                    }
+
                     processed++;
-                    continue;
                 }
 
-                var ovenInfo = GetOvenInfo(oven);
-                var ovenLooters = GetLooters(oven);
-                if (ovenLooters == null)
-                {
-                    processed++;
-                    continue;
-                }
-
-                for (var i = 0; i < ovenLooters.Count; i++)
-                {
-                    var player = ovenLooters[i];
-                    if (player != null && !player.IsDestroyed && HasPermission(player) && GetEnabled(player))
-                        CreateUi(player, oven, ovenInfo);
-                }
-
-                processed++;
+                for (var i = 0; i < ovensToRemove.Count; i++)
+                    queuedUiUpdates.Remove(ovensToRemove[i]);
             }
-
-            for (var i = 0; i < ovensToRemove.Count; i++)
-                queuedUiUpdates.Remove(ovensToRemove[i]);
+            finally
+            {
+                Facepunch.Pool.FreeUnmanaged(ref ovensToRemove);
+            }
         }
 
         #endregion
@@ -404,71 +417,80 @@ namespace Oxide.Plugins
             int totalStackSize = Math.Min(totalAmount / numOreSlots, item.info.stackable);
             int remaining = totalAmount - totalAmount / numOreSlots * numOreSlots;
 
-            List<int> addedSlots = new List<int>();
-            List<OvenSlot> ovenSlots = new List<OvenSlot>();
+            List<int> addedSlots = Facepunch.Pool.Get<List<int>>();
+            List<OvenSlot> ovenSlots = Facepunch.Pool.Get<List<OvenSlot>>();
 
-            for (int i = 0; i < numOreSlots; ++i)
+            try
             {
-                Item existingItem;
-                int slot = FindMatchingSlotIndex(oven, container, out existingItem, item.info, addedSlots);
-
-                if (slot == -1)
-                    return MoveResult.NotEnoughSlots;
-
-                addedSlots.Add(slot);
-
-                var ovenSlot = new OvenSlot
+                for (int i = 0; i < numOreSlots; ++i)
                 {
-                    Position = existingItem?.position,
-                    Index = slot,
-                    Item = existingItem
-                };
+                    Item existingItem;
+                    int slot = FindMatchingSlotIndex(oven, container, out existingItem, item.info, addedSlots);
 
-                int currentAmount = existingItem?.amount ?? 0;
-                int missingAmount = totalStackSize - currentAmount + (i < remaining ? 1 : 0);
-                ovenSlot.DeltaAmount = missingAmount;
+                    if (slot == -1)
+                        return MoveResult.NotEnoughSlots;
 
-                if (currentAmount + missingAmount <= 0)
-                    continue;
+                    addedSlots.Add(slot);
 
-                ovenSlots.Add(ovenSlot);
-            }
+                    var ovenSlot = new OvenSlot
+                    {
+                        Position = existingItem?.position,
+                        Index = slot,
+                        Item = existingItem
+                    };
 
-            foreach (OvenSlot slot in ovenSlots)
-            {
-                if (slot.Item == null)
-                {
-                    Item newItem = ItemManager.Create(item.info, slot.DeltaAmount, item.skin);
-                    slot.Item = newItem;
-                    newItem.MoveToContainer(container, slot.Position ?? slot.Index);
-                }
-                else
-                {
-                    slot.Item.amount += slot.DeltaAmount;
-                    slot.Item.MarkDirty();
+                    int currentAmount = existingItem?.amount ?? 0;
+                    int missingAmount = totalStackSize - currentAmount + (i < remaining ? 1 : 0);
+                    ovenSlot.DeltaAmount = missingAmount;
+
+                    if (currentAmount + missingAmount <= 0)
+                        continue;
+
+                    ovenSlots.Add(ovenSlot);
                 }
 
-                totalMoved += slot.DeltaAmount;
-            }
+                foreach (OvenSlot slot in ovenSlots)
+                {
+                    if (slot.Item == null)
+                    {
+                        Item newItem = ItemManager.Create(item.info, slot.DeltaAmount, item.skin);
+                        slot.Item = newItem;
+                        newItem.MoveToContainer(container, slot.Position ?? slot.Index);
+                    }
+                    else
+                    {
+                        slot.Item.amount += slot.DeltaAmount;
+                        slot.Item.MarkDirty();
+                    }
 
-            container.MarkDirty();
+                    totalMoved += slot.DeltaAmount;
+                }
 
-            if (totalMoved >= item.amount)
-            {
-                item.Remove();
-                item.GetRootContainer()?.MarkDirty();
-                return MoveResult.Ok;
-            }
-            else
-            {
+                container.MarkDirty();
+
+                if (totalMoved >= item.amount)
+                {
+                    item.Remove();
+                    item.GetRootContainer()?.MarkDirty();
+                    return MoveResult.Ok;
+                }
+
                 item.amount -= totalMoved;
                 item.GetRootContainer()?.MarkDirty();
                 return MoveResult.SlotsFilled;
+            }
+            finally
+            {
+                Facepunch.Pool.FreeUnmanaged(ref addedSlots);
+                Facepunch.Pool.FreeUnmanaged(ref ovenSlots);
             }
         }
 
         private void AutoAddFuel(PlayerInventory playerInventory, BaseOven oven)
         {
+            if (oven == null || oven.inventory == null || oven.fuelType == null)
+                return;
+
             int neededFuel = (int)Math.Ceiling(GetOvenInfo(oven).FuelNeeded);
             neededFuel -= oven.inventory.GetAmount(oven.fuelType.itemid, false);
 
@@ -608,6 +630,7 @@ namespace Oxide.Plugins
             int totalSlots = GetTotalStacksOption(player, oven) ?? oven.inputSlots;
             string remainingTimeStr;
             string neededFuelStr;
+            string fuelNameStr = oven.fuelType != null ? oven.fuelType.displayName.english.ToLower() : "power";
 
             if (ovenInfo.ETA <= 0)
             {
@@ -671,7 +694,7 @@ namespace Oxide.Plugins
             result.Add(new CuiLabel
             {
                 RectTransform = { AnchorMin = "0.02 0.7", AnchorMax = "0.98 1" },
-                Text = { Text = string.Format("{0}: " + (ovenInfo.ETA > 0 ? "~" : "") + remainingTimeStr + " (" + neededFuelStr + " " + oven.fuelType.displayName.english.ToLower() + ")", lang.GetMessage("eta", this, player.UserIDString)), Align = TextAnchor.MiddleLeft, Color = contentColor, FontSize = contentSize }
+                Text = { Text = string.Format("{0}: " + (ovenInfo.ETA > 0 ? "~" : "") + remainingTimeStr + " (" + neededFuelStr + " " + fuelNameStr + ")", lang.GetMessage("eta", this, player.UserIDString)), Align = TextAnchor.MiddleLeft, Color = contentColor, FontSize = contentSize }
             }, contentPanel);
 
             result.Add(new CuiButton
@@ -887,7 +910,7 @@ namespace Oxide.Plugins
                 return;
             }
 
-            if (!GetSettings(lootSource.ShortPrefabName).allowTrimFuel)
+            if (!GetSettings(lootSource.ShortPrefabName).allowTrimFuel || lootSource.fuelType == null)
                 return;
 
             OvenInfo ovenInfo = GetOvenInfo(lootSource);
@@ -1019,9 +1042,25 @@ namespace Oxide.Plugins
             return PluginConfig.OvenConfig.CreateDefault(true);
         }
 
+        private bool IsFuelOptionalOven(BaseOven oven)
+        {
+            if (oven == null)
+                return false;
+
+            // Electric furnaces and any future BaseOven that has no fuel item should still be handled.
+            // Wood/fuel based ovens continue to require a burnable item.
+            return oven.fuelType == null || oven.ShortPrefabName.StartsWith("electricfurnace", StringComparison.OrdinalIgnoreCase);
+        }
+
         private bool IsOvenCompatible(BaseOven oven)
         {
-            if (oven == null || !oven.allowByproductCreation)
+            if (oven == null)
+                return false;
+
+            if (IsFuelOptionalOven(oven))
+                return GetSettings(oven.ShortPrefabName).enabled;
+
+            if (!oven.allowByproductCreation)
                 return false;
 
             return GetSettings(oven.ShortPrefabName).enabled;
@@ -1088,7 +1127,7 @@ namespace Oxide.Plugins
                 if (oven == null || !plugin.IsOvenCompatible(oven))
                     return;
 
-                if (FindBurnable() == null)
+                if (!plugin.IsFuelOptionalOven(oven) && FindBurnable() == null)
                     return;
 
                 StopCooking();
@@ -1113,11 +1152,12 @@ namespace Oxide.Plugins
 
             public void Cook()
             {
-                var burnableItem = FindBurnable();
+                bool fuelOptional = plugin.IsFuelOptionalOven(oven);
+                var burnableItem = fuelOptional ? null : FindBurnable();
                 if (Interface.CallHook("OnOvenCook", this, burnableItem) != null)
                     return;
 
-                if (burnableItem == null)
+                if (!fuelOptional && burnableItem == null)
                 {
                     StopCooking();
                     return;
@@ -1140,17 +1180,20 @@ namespace Oxide.Plugins
                 if (slot)
                     slot.SendMessage("Cook", 0.5f, SendMessageOptions.DontRequireReceiver);
 
-                var burnable = burnableItem.info.GetComponent<ItemModBurnable>();
-                burnableItem.fuel -= 0.5f * (oven.cookingTemperature / 200f) * cfg.fuelUsageSpeedMultiplier;
-
-                if (!burnableItem.HasFlag(global::Item.Flag.OnFire))
+                if (burnableItem != null)
                 {
-                    burnableItem.SetFlag(global::Item.Flag.OnFire, true);
-                    burnableItem.MarkDirty();
-                }
+                    var burnable = burnableItem.info.GetComponent<ItemModBurnable>();
+                    burnableItem.fuel -= 0.5f * (oven.cookingTemperature / 200f) * cfg.fuelUsageSpeedMultiplier;
 
-                if (burnableItem.fuel <= 0f)
-                    ConsumeFuel(burnableItem, burnable);
+                    if (!burnableItem.HasFlag(global::Item.Flag.OnFire))
+                    {
+                        burnableItem.SetFlag(global::Item.Flag.OnFire, true);
+                        burnableItem.MarkDirty();
+                    }
+
+                    if (burnableItem.fuel <= 0f)
+                        ConsumeFuel(burnableItem, burnable);
+                }
 
                 ticks++;
                 plugin.QueueUiUpdate(oven);
